@@ -1,6 +1,23 @@
 import pandas as pd
 import json
+import os
+import sys
+import google.generativeai as genai
 from datetime import datetime
+
+# --- Gemini AI Configuration ---
+try:
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_api_key:
+        raise KeyError("GEMINI_API_KEY environment variable not set.")
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel('gemini-flash-latest')
+except KeyError as e:
+    print(f"Error: {e}")
+    model = None
+except Exception as e:
+    print(f"An error occurred during Gemini AI configuration: {e}")
+    model = None
 
 class DateTimeEncoder(json.JSONEncoder):
     """
@@ -12,18 +29,32 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super(DateTimeEncoder, self).default(obj)
 
-def get_sheet_names(file_path):
-    """Prints the names of all sheets in an Excel file."""
+def get_gemini_analysis(sheet_name, data):
+    """
+    Analyzes the sheet data using the Gemini API and returns a summary.
+    """
+    if not model:
+        return "Gemini AI analysis could not be performed. API key may be missing or invalid."
+
+    prompt = f"""
+    Analyze the following JSON data from a spreadsheet sheet named '{sheet_name}'.
+    The data includes pre-header information, a main data table, and post-header information.
+    Your task is to:
+    1. Provide a concise summary of the sheet's purpose and content.
+    2. Interpret the structure and key information present in the data.
+    3. Confirm that the data appears complete and makes sense in the context of a "Provider Services per Location" document.
+
+    Data:
+    {json.dumps(data, indent=2, cls=DateTimeEncoder)}
+    """
     try:
-        xls = pd.ExcelFile(file_path)
-        print("Sheet names:", xls.sheet_names)
-        return xls.sheet_names
-    except FileNotFoundError:
-        print(f"Error: The file '{file_path}' was not found.")
-        return []
+        print(f"  - Requesting Gemini analysis for '{sheet_name}'...")
+        response = model.generate_content(prompt)
+        print(f"  - Received Gemini analysis for '{sheet_name}'.")
+        return response.text
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return []
+        print(f"  - Gemini analysis failed for '{sheet_name}': {e}")
+        return f"An error occurred during Gemini AI analysis: {e}"
 
 def process_sheet(file_path, sheet_name):
     """
@@ -31,10 +62,8 @@ def process_sheet(file_path, sheet_name):
     and preserving all data.
     """
     try:
-        # Read the raw data from the sheet without assuming any header
         df_raw = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
 
-        # Attempt to find the main data table and headers
         header_row_index = -1
         for i, row in df_raw.iterrows():
             if row.notna().sum() > df_raw.shape[1] / 2:
@@ -62,32 +91,39 @@ def process_sheet(file_path, sheet_name):
         print(f"An error occurred while processing sheet '{sheet_name}': {e}")
         return {"sheet_name": sheet_name, "error": str(e)}
 
-def convert_excel_to_structured_json(file_path, output_path):
+def process_single_sheet(file_path, sheet_name, output_dir):
     """
-    Converts an Excel file with multiple sheets and complex layouts into a
-    structured JSON file.
+    Converts a single Excel sheet into a structured and analyzed JSON file.
     """
-    sheet_names = get_sheet_names(file_path)
-    if not sheet_names:
-        return
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    all_sheets_data = []
-    for sheet_name in sheet_names:
-        print(f"Processing sheet: {sheet_name}")
-        sheet_data = process_sheet(file_path, sheet_name)
-        all_sheets_data.append(sheet_data)
+    print(f"Processing sheet: {sheet_name}")
+    sheet_data = process_sheet(file_path, sheet_name)
 
-    # Save the structured data to a JSON file using the custom encoder
+    # Get Gemini analysis
+    analysis = get_gemini_analysis(sheet_name, sheet_data)
+    sheet_data["gemini_analysis"] = analysis
+
+    # Sanitize sheet name for use as a filename
+    safe_sheet_name = "".join(c for c in sheet_name if c.isalnum() or c in (' ', '_')).rstrip()
+    output_path = os.path.join(output_dir, f"{safe_sheet_name}.json")
+
+    # Save the structured data to a JSON file
     with open(output_path, "w") as json_file:
-        json.dump(all_sheets_data, json_file, indent=4, cls=DateTimeEncoder)
+        json.dump(sheet_data, json_file, indent=4, cls=DateTimeEncoder)
 
-    print(f"Successfully converted Excel to structured JSON at '{output_path}'")
-
+    print(f"  -> Saved to '{output_path}'")
 
 # Configuration
 EXCEL_FILE = "Provider Services per Location (A&A + RISE) (1).xlsx"
-JSON_OUTPUT_FILE = "data_final.json"
+JSON_OUTPUT_DIR = "processed_sheets"
 
-# Run the conversion
+# Run the conversion for a single sheet
 if __name__ == "__main__":
-    convert_excel_to_structured_json(EXCEL_FILE, JSON_OUTPUT_FILE)
+    if len(sys.argv) != 2:
+        print("Usage: python advanced_convert.py <sheet_name>")
+        sys.exit(1)
+
+    sheet_to_process = sys.argv[1]
+    process_single_sheet(EXCEL_FILE, sheet_to_process, JSON_OUTPUT_DIR)
