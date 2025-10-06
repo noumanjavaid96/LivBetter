@@ -62,6 +62,20 @@ def get_gemini_analysis(sheet_name, data):
         print(f"  - Gemini analysis failed for '{sheet_name}': {error_message}")
         return error_message
 
+def get_sheet_names(file_path):
+    """
+    Returns a list of all sheet names in an Excel file.
+    """
+    try:
+        xls = pd.ExcelFile(file_path)
+        return xls.sheet_names
+    except FileNotFoundError:
+        print(f"Error: The file '{file_path}' was not found.", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"An error occurred while reading the Excel file: {e}", file=sys.stderr)
+        return []
+
 def process_sheet_data(file_path, sheet_name):
     """
     Processes a single sheet from the Excel file, cleans the data,
@@ -100,40 +114,45 @@ def process_sheet_data(file_path, sheet_name):
         print(f"An error occurred while processing sheet '{sheet_name}': {e}", file=sys.stderr)
         return {"sheet_name": sheet_name, "error": str(e)}
 
-def process_single_sheet(file_path, sheet_name, output_dir):
+def main():
     """
-    Converts a single Excel sheet into a structured and analyzed JSON file.
+    Main function to orchestrate the conversion process.
     """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    if not os.path.exists(JSON_OUTPUT_DIR):
+        os.makedirs(JSON_OUTPUT_DIR)
 
-    print(f"Processing sheet: {sheet_name}")
-    sheet_data = process_sheet_data(file_path, sheet_name)
-
-    if "error" in sheet_data:
-        print(f"Skipping analysis and saving due to processing error.")
-        return
-
-    # Get Gemini analysis
-    analysis = get_gemini_analysis(sheet_name, sheet_data)
-    sheet_data["gemini_analysis"] = analysis
-
-    # Sanitize sheet name for use as a filename
-    safe_sheet_name = "".join(c for c in sheet_name if c.isalnum() or c in (' ', '_')).rstrip()
-    output_path = os.path.join(output_dir, f"{safe_sheet_name}.json")
-
-    # Save the structured data to a JSON file
-    try:
-        with open(output_path, "w") as json_file:
-            json.dump(sheet_data, json_file, indent=4, cls=DateTimeEncoder)
-        print(f"  -> Successfully saved to '{output_path}'\n")
-    except Exception as e:
-        print(f"  -> Failed to save JSON for sheet '{sheet_name}': {e}\n", file=sys.stderr)
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python advanced_convert.py <sheet_name>", file=sys.stderr)
+    sheet_names = get_sheet_names(EXCEL_FILE)
+    if not sheet_names:
+        print("No sheets found to process. Exiting.", file=sys.stderr)
         sys.exit(1)
 
-    sheet_to_process = sys.argv[1]
-    process_single_sheet(EXCEL_FILE, sheet_to_process, JSON_OUTPUT_DIR)
+    print(f"Found {len(sheet_names)} sheets to process. Starting conversion...\n")
+
+    for sheet_name in sheet_names:
+        print(f"--- Processing sheet: '{sheet_name}' ---")
+        sheet_data = process_sheet_data(EXCEL_FILE, sheet_name)
+
+        if "error" in sheet_data:
+            print(f"Skipping analysis and saving due to processing error.")
+            continue
+
+        # Get Gemini analysis
+        analysis = get_gemini_analysis(sheet_name, sheet_data)
+        sheet_data["gemini_analysis"] = analysis
+
+        # Sanitize sheet name for use as a filename
+        safe_sheet_name = "".join(c for c in sheet_name if c.isalnum() or c in (' ', '_')).rstrip()
+        output_path = os.path.join(JSON_OUTPUT_DIR, f"{safe_sheet_name}.json")
+
+        # Save the structured data to a JSON file
+        try:
+            with open(output_path, "w") as json_file:
+                json.dump(sheet_data, json_file, indent=4, cls=DateTimeEncoder)
+            print(f"  -> Successfully saved to '{output_path}'\n")
+        except Exception as e:
+            print(f"  -> Failed to save JSON for sheet '{sheet_name}': {e}\n", file=sys.stderr)
+
+    print("--- All sheets processed. ---")
+
+if __name__ == "__main__":
+    main()
